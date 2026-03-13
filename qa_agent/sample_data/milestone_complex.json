@@ -1,0 +1,17 @@
+{
+  "milestone_id": 3,
+  "objective": "Frontend Development",
+  "deliverables": [
+    "GitHub repository URL with frontend code",
+    "Staging deployment URL for UI",
+    "Responsive design verification report (PDF)"
+  ],
+  "acceptance_criteria": [
+    "UI matches approved mockups within 5px tolerance on desktop and tablet",
+    "ESLint passes with 0 errors, unit test coverage >= 80%",
+    "Performance audit shows LCP < 2.5s on staging",
+    "All core pages (dashboard, board, analytics) functional"
+  ],
+  "estimated_days": 15,
+  "amount_percentage": 30
+}

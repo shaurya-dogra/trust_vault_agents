@@ -1,0 +1,20 @@
+{
+  "milestone_id": 3,
+  "objective": "Frontend Development – Checkout UI",
+  "deliverables": [
+    "GitHub Repository URL with source code",
+    "Unit Test Coverage Report (>=80%)",
+    "Design mockup images (desktop + mobile)",
+    "Audio walkthrough of the UI flow"
+  ],
+  "acceptance_criteria": [
+    "Linting passes with no errors and unit tests achieve >=80% coverage",
+    "Form validation handles required fields and email format correctly",
+    "Desktop mockup must be at least 1440x900px",
+    "Mobile mockup must be exactly 375px wide",
+    "Audio walkthrough must be at least 20 seconds long",
+    "Audio must be stereo with minimum 44100Hz sample rate"
+  ],
+  "estimated_days": 10,
+  "amount_percentage": 35
+}

@@ -1,0 +1,14 @@
+langgraph>=0.2.0
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-ollama>=0.1.0
+gradio>=4.0.0
+pydantic>=2.0.0
+pillow>=10.0.0
+colorthief>=0.2.1
+opencv-python-headless>=4.8.0
+librosa>=0.10.0
+mutagen>=1.47.0
+faster-whisper>=0.10.0
+semgrep>=1.45.0

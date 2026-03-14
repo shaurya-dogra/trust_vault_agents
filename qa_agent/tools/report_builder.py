@@ -27,6 +27,7 @@ def build_report(state: dict) -> dict:
                 criteria_results=criteria,
                 agent_confidence=raw.get("agent_confidence", 0.5),
                 warnings=raw.get("warnings", []),
+                reasoning_trace=raw.get("reasoning_trace", None)
             )
         )
 
@@ -35,13 +36,14 @@ def build_report(state: dict) -> dict:
     for dr in domain_reports_raw:
         for cr in dr.criteria_results:
             if not cr.met:
-                issues.append(
-                    {
-                        "severity": "high" if cr.confidence >= 0.8 else "medium",
-                        "criterion": cr.criterion,
-                        "detail": cr.evidence,
-                    }
-                )
+                issue = {
+                    "severity": "high" if cr.confidence >= 0.8 else "medium",
+                    "criterion": cr.criterion,
+                    "detail": cr.evidence,
+                }
+                if cr.recommended_fix:
+                    issue["recommended_fix"] = cr.recommended_fix
+                issues.append(issue)
 
     report = QAReport(
         milestone_id=milestone.get("milestone_id", 0),
@@ -59,5 +61,6 @@ def build_report(state: dict) -> dict:
         issues=issues,
         requires_human_review=state.get("requires_human_review", False),
         confidence=state.get("confidence", 0.0),
+        tier=state.get("tier", "1")
     )
     return report.model_dump()

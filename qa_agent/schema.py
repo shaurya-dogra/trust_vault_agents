@@ -12,6 +12,7 @@ class CriterionResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: str
     source: str
+    recommended_fix: Optional[str] = None
 
 
 class DomainReport(BaseModel):
@@ -20,6 +21,7 @@ class DomainReport(BaseModel):
     criteria_results: list[CriterionResult]
     agent_confidence: float = Field(ge=0.0, le=1.0)
     warnings: list[str] = []
+    reasoning_trace: Optional[str] = None
 
 
 class QAReport(BaseModel):
@@ -34,6 +36,7 @@ class QAReport(BaseModel):
     issues: list[dict]
     requires_human_review: bool
     confidence: float
+    tier: str = "1"
 
     @model_validator(mode="after")
     def validate_status(self) -> "QAReport":
@@ -41,3 +44,9 @@ class QAReport(BaseModel):
         if self.status not in valid:
             raise ValueError(f"status must be one of {valid}")
         return self
+
+
+class EscalationReport(BaseModel):
+    reason: str
+    unverifiable_criteria: list[dict]  # [{"criterion": str, "reason": str}]
+    requires_human_review: bool = True

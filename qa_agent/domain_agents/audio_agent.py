@@ -1,12 +1,13 @@
 """
-TrustVault QA Agent — Audio Domain Agent
-Analyzes MP3/WAV/FLAC audio files using mutagen, librosa, and faster-whisper.
+TrustVault QA Agent — Audio Domain Agent (Tier 2)
+Analyzes audio files leveraging metadata, transcription, diarization, and prosody.
 Independently runnable: python domain_agents/audio_agent.py <audio_file>
 """
 
 import json
 import re
 import sys
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -15,54 +16,48 @@ import prompts
 from orchestrator import filter_criteria_for_domain
 from schema import CriterionResult
 
+GENERAL_MODEL = "gpt-oss:120b-cloud"
 
 def _step1_metadata(audio_path: str) -> dict:
-    """Extract basic audio metadata via mutagen."""
     try:
-        from mutagen import File
-        import os
-        f = File(audio_path)
-        if f is None:
-            return {"filename": Path(audio_path).name,
-                    "tool_status": "error: mutagen could not read file"}
-        info = f.info
+        import mutagen
+        meta = mutagen.File(audio_path)
+        if meta is None:
+            raise ValueError("Unsupported audio format")
+        info = meta.info
         return {
             "filename": Path(audio_path).name,
-            "duration_seconds": round(getattr(info, "length", 0.0), 2),
-            "sample_rate_hz": getattr(info, "sample_rate", 0),
-            "bitrate_kbps": round(getattr(info, "bitrate", 0) / 1000, 1),
+            "format": type(meta).__name__,
+            "duration_sec": round(getattr(info, "length", 0.0), 2),
+            "bitrate_kbps": round(getattr(info, "bitrate", 0) / 1000, 2),
             "channels": getattr(info, "channels", 0),
-            "codec": type(info).__name__,
-            "file_size_mb": round(os.path.getsize(audio_path) / (1024 * 1024), 3),
+            "sample_rate_hz": getattr(info, "sample_rate", getattr(info, "info", {}).get("sample_rate", 0)),
+            "file_size_kb": round(os.path.getsize(audio_path) / 1024, 2),
             "tool_status": "ok",
         }
     except ImportError:
-        return {"filename": Path(audio_path).name,
-                "tool_status": "tool_unavailable: mutagen not installed"}
+        return {"tool_status": "tool_unavailable: mutagen not installed"}
     except Exception as exc:
-        return {"filename": Path(audio_path).name,
-                "tool_status": f"error: {exc}"}
+        return {"tool_status": f"error: {exc}"}
 
 
 def _step2_quality(audio_path: str) -> dict:
-    """Audio quality analysis via librosa."""
     try:
         import librosa
         import numpy as np
-        y, sr = librosa.load(audio_path, sr=None, mono=True, duration=60)
+        y, sr = librosa.load(audio_path, sr=None)
         rms = librosa.feature.rms(y=y)[0]
-        rms_mean = float(np.mean(rms))
-        silence_threshold = 0.01
-        silence_ratio = float(np.sum(rms < silence_threshold) / len(rms))
-        clipping = bool(np.any(np.abs(y) >= 0.999))
-        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-        zcr = librosa.feature.zero_crossing_rate(y=y)[0]
+        mean_rms = float(np.mean(rms))
+        dbfs = float(20 * np.log10(mean_rms + 1e-10))
+        zcr = librosa.feature.zero_crossing_rate(y)[0]
+        mean_zcr = float(np.mean(zcr))
+        stft = np.abs(librosa.stft(y))
+        spectral_bandwidth = librosa.feature.spectral_bandwidth(S=stft, sr=sr)[0]
+        mean_bandwidth = float(np.mean(spectral_bandwidth))
         return {
-            "rms_energy_mean": round(rms_mean, 6),
-            "silence_ratio": round(silence_ratio, 4),
-            "clipping_detected": clipping,
-            "spectral_centroid_mean": round(float(np.mean(centroid)), 2),
-            "zero_crossing_rate_mean": round(float(np.mean(zcr)), 6),
+            "loudness_dbfs": round(dbfs, 2),
+            "zero_crossing_rate": round(mean_zcr, 4),
+            "spectral_bandwidth_hz": round(mean_bandwidth, 2),
             "tool_status": "ok",
         }
     except ImportError:
@@ -71,49 +66,125 @@ def _step2_quality(audio_path: str) -> dict:
         return {"tool_status": f"error: {exc}"}
 
 
-def _step3_transcription(audio_path: str) -> dict:
-    """Transcribe audio using faster-whisper (local, no API)."""
+def _step3_classification(audio_path: str) -> dict:
+    """Uses SpeechBrain to classify the audio environment."""
+    try:
+        from speechbrain.inference.interfaces import foreign_class
+        # This requires downloading models at runtime, so we do it safely
+        classifier = foreign_class(source="speechbrain/urbansound8k_ecapa", run_opts={"device": "cpu"})
+        out_prob, score, index, text_lab = classifier.classify_file(audio_path)
+        return {
+            "environment_class": text_lab[0],
+            "classification_confidence": float(score[0]),
+            "tool_status": "ok"
+        }
+    except ImportError:
+        return {"tool_status": "tool_unavailable: speechbrain not installed"}
+    except Exception as exc:
+        return {"tool_status": f"error: {exc}"}
+
+
+def _step4_prosody(audio_path: str) -> dict:
+    """Analyze speech prosody (pitch, speaking rate) via praat-parselmouth."""
+    try:
+        import parselmouth
+        snd = parselmouth.Sound(audio_path)
+        pitch = snd.to_pitch()
+        pitch_values = pitch.selected_array['frequency']
+        pitch_values = pitch_values[pitch_values > 0]
+        
+        if len(pitch_values) == 0:
+            return {"tool_status": "error: no pitch detected"}
+            
+        return {
+            "mean_pitch_hz": float(pitch_values.mean()),
+            "pitch_std_dev": float(pitch_values.std()),
+            "tool_status": "ok"
+        }
+    except ImportError:
+        return {"tool_status": "tool_unavailable: praat-parselmouth not installed"}
+    except Exception as exc:
+        return {"tool_status": f"error: {exc}"}
+
+
+def _step5_diarization(audio_path: str) -> dict:
+    """Speaker diarization using pyannote-audio (requires HF_TOKEN)."""
+    try:
+        from pyannote.audio import Pipeline
+        import torch
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            return {"tool_status": "tool_unavailable: HF_TOKEN missing"}
+            
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=token
+        )
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+            
+        diarization = pipeline(audio_path)
+        speakers = set()
+        segments = []
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            speakers.add(speaker)
+            segments.append({
+                "start": round(turn.start, 2),
+                "end": round(turn.end, 2),
+                "speaker": speaker
+            })
+            
+        return {
+            "total_speakers": len(speakers),
+            "segments": segments[:50],  # truncated for context limits
+            "tool_status": "ok"
+        }
+    except ImportError:
+        return {"tool_status": "tool_unavailable: pyannote.audio not installed"}
+    except Exception as exc:
+        return {"tool_status": f"error: {exc}"}
+
+
+def _step6_transcription_and_topics(audio_path: str) -> dict:
+    """Transcribe via faster_whisper and extract topics via keybert."""
     try:
         from faster_whisper import WhisperModel
-        model = WhisperModel("base", device="cpu", compute_type="int8")
-        segments_raw, info = model.transcribe(audio_path, beam_size=5)
-        segments = []
-        transcript_parts = []
-        for seg in segments_raw:
-            segments.append({
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
-                "text": seg.text.strip(),
-            })
-            transcript_parts.append(seg.text.strip())
-        transcript = " ".join(transcript_parts)
+        # Small model for demo purposes; production might use 'large-v3'
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segments, info = model.transcribe(audio_path, beam_size=5)
+        text_segments = []
+        full_text = ""
+        for s in segments:
+            text_segments.append(f"[{s.start:.1f}s - {s.end:.1f}s] {s.text}")
+            full_text += s.text + " "
+            
+        transcript = "\n".join(text_segments)
+        
+        # Topic extraction
+        topics = []
+        try:
+            from keybert import KeyBERT
+            kw_model = KeyBERT()
+            # Extract top 5 keywords/phrases
+            keywords = kw_model.extract_keywords(full_text, keyphrase_ngram_range=(1, 2), stop_words=None, top_n=5)
+            topics = [k[0] for k in keywords]
+        except Exception:
+            pass # Continue if keybert fails
+
         return {
-            "transcript": transcript,
-            "detected_language": info.language,
-            "word_count": len(transcript.split()) if transcript else 0,
-            "segments": segments[:50],
+            "language": info.language,
+            "language_probability": round(info.language_probability, 4),
+            "transcript_snippet": transcript[:3000],  # Limit length for LLM context
+            "topics": topics,
             "tool_status": "ok",
         }
     except ImportError:
-        return {
-            "transcript": "",
-            "detected_language": "unknown",
-            "word_count": 0,
-            "segments": [],
-            "tool_status": "tool_unavailable: faster-whisper not installed",
-        }
+        return {"tool_status": "tool_unavailable: faster_whisper not installed"}
     except Exception as exc:
-        return {
-            "transcript": "",
-            "detected_language": "unknown",
-            "word_count": 0,
-            "segments": [],
-            "tool_status": f"error: {exc}",
-        }
+        return {"tool_status": f"error: {exc}"}
 
 
 def _validate_criteria_results(raw_results: list, source_default: str) -> list[dict]:
-    """Validate LLM criteria results through Pydantic CriterionResult."""
     validated = []
     for r in raw_results:
         try:
@@ -129,8 +200,7 @@ def _validate_criteria_results(raw_results: list, source_default: str) -> list[d
     return validated
 
 
-def _step4_llm_judgment(audio_data: dict, acceptance_criteria: list, llm) -> list:
-    """Ask LLM to evaluate criteria from audio metadata + transcript. Retry once on parse failure."""
+def _step7_llm_judgment(audio_data: dict, acceptance_criteria: list, llm) -> list:
     prompt = prompts.AUDIO_JUDGMENT_PROMPT.format(
         audio_data=json.dumps(audio_data, indent=2),
         acceptance_criteria=json.dumps(acceptance_criteria),
@@ -157,106 +227,81 @@ def _step4_llm_judgment(audio_data: dict, acceptance_criteria: list, llm) -> lis
             ]
 
 
-def run_audio_agent(audio_paths: list, acceptance_criteria: list, llm, live_updates: list) -> dict:
+def run_audio_agent(audio_path: str, acceptance_criteria: list, llm, live_updates: list) -> dict:
     """
-    Full audio analysis pipeline.
-    Returns a dict matching DomainReport shape.
+    Tier 2 Audio analysis pipeline.
     """
-    if not audio_paths:
-        return {
-            "domain": "audio",
-            "tool_results": {},
-            "criteria_results": [],
-            "agent_confidence": 0.0,
-            "warnings": ["No audio files provided"],
-        }
-
-    # Step 1 — Metadata for all files, select primary by longest duration
-    all_metadata = {}
-    longest_path = audio_paths[0]
-    max_duration = -1
-    for p in audio_paths:
-        m = _step1_metadata(p)
-        all_metadata[Path(p).name] = m
-        d = m.get("duration_seconds", 0)
-        if isinstance(d, (int, float)) and d > max_duration:
-            max_duration = d
-            longest_path = p
-
-    primary = longest_path
-    meta = all_metadata[Path(primary).name]
-    live_updates.append(f"[AUDIO]     Analyzing {len(audio_paths)} audio file(s), primary: {Path(primary).name}")
-    live_updates.append(
-        f"[AUDIO]     Step 1/4 — Metadata: duration={meta.get('duration_seconds', '?')}s, "
-        f"sample_rate={meta.get('sample_rate_hz', '?')}Hz, "
-        f"bitrate={meta.get('bitrate_kbps', '?')}kbps"
-    )
+    live_updates.append(f"[AUDIO]     Analyzing audio file: {Path(audio_path).name}")
 
     failed_tools = 0
-    if meta.get("tool_status", "").startswith("tool_unavailable"):
-        failed_tools += 1
+
+    # Step 1 — Metadata
+    meta = _step1_metadata(audio_path)
+    if meta.get("tool_status") not in ("ok",): failed_tools += 1
+    live_updates.append(f"[AUDIO]     Step 1/7 — Metadata: {meta.get('duration_sec', '?')}s, {meta.get('format', '?')}")
 
     # Step 2 — Quality
-    quality = _step2_quality(primary)
-    if quality.get("tool_status", "").startswith("tool_unavailable") or quality.get("tool_status", "").startswith("error"):
-        failed_tools += 1
-    live_updates.append(
-        f"[AUDIO]     Step 2/4 — Quality: rms={quality.get('rms_energy_mean', '?')}, "
-        f"silence={quality.get('silence_ratio', '?')}, "
-        f"clipping={quality.get('clipping_detected', '?')}"
-    )
+    quality = _step2_quality(audio_path)
+    if quality.get("tool_status") not in ("ok",): failed_tools += 1
+    live_updates.append(f"[AUDIO]     Step 2/7 — Quality: {quality.get('loudness_dbfs', '?')} dBFS")
+    
+    # Step 3 — Classification
+    classification = _step3_classification(audio_path)
+    if classification.get("tool_status") not in ("ok",): failed_tools += 1
+    live_updates.append(f"[AUDIO]     Step 3/7 — Environment Classification: {classification.get('environment_class', '?')}")
+    
+    # Step 4 — Prosody
+    prosody = _step4_prosody(audio_path)
+    if prosody.get("tool_status") not in ("ok",): failed_tools += 1
+    live_updates.append(f"[AUDIO]     Step 4/7 — Prosody: {prosody.get('mean_pitch_hz', '?')} Hz mean pitch")
+    
+    # Step 5 — Diarization
+    diarization = _step5_diarization(audio_path)
+    if diarization.get("tool_status") not in ("ok",): failed_tools += 1
+    live_updates.append(f"[AUDIO]     Step 5/7 — Diarization: {diarization.get('total_speakers', '?')} speaker(s)")
 
-    # Step 3 — Transcription
-    transcription = _step3_transcription(primary)
-    if transcription.get("tool_status", "").startswith("tool_unavailable") or transcription.get("tool_status", "").startswith("error"):
-        failed_tools += 1
-    live_updates.append(
-        f"[AUDIO]     Step 3/4 — Transcription complete "
-        f"({transcription.get('word_count', 0)} words, "
-        f"lang={transcription.get('detected_language', 'unknown')})"
-    )
+    # Step 6 — Transcription & Topics
+    transcript = _step6_transcription_and_topics(audio_path)
+    if transcript.get("tool_status") not in ("ok",): failed_tools += 1
+    msg = f"[AUDIO]     Step 6/7 — Transcription: language={transcript.get('language', '?')}"
+    if transcript.get("topics"):
+        msg += f", topics={', '.join(transcript['topics'][:3])}"
+    live_updates.append(msg)
 
     tool_results = {
-        "primary_audio": Path(primary).name,
-        "all_files": [Path(p).name for p in audio_paths],
-        "all_metadata": all_metadata,
         "metadata": meta,
         "quality": quality,
-        "transcription": transcription,
+        "classification": classification,
+        "prosody": prosody,
+        "diarization": diarization,
+        "transcription": transcript,
     }
 
-    # Step 4 — Filter criteria & LLM
+    # Step 7 — Filter & Judgment
     filtered_criteria = filter_criteria_for_domain(acceptance_criteria, "audio", llm)
     live_updates.append(f"[AUDIO]     Relevant criteria for domain: {len(filtered_criteria)}/{len(acceptance_criteria)}")
 
     warnings = []
 
     if len(filtered_criteria) == 0:
-        live_updates.append("[AUDIO]     Step 4/4 — No relevant criteria, skipping LLM judgment")
-        warnings.append("No domain-relevant criteria — tool results recorded for reference only")
+        live_updates.append("[AUDIO]     Step 7/7 — No relevant criteria, skipping LLM judgment")
+        warnings.append("No domain-relevant criteria — tool results recorded")
         criteria_results = []
     else:
-        live_updates.append("[AUDIO]     Step 4/4 — LLM judgment in progress...")
-        criteria_results = _step4_llm_judgment(tool_results, filtered_criteria, llm)
+        live_updates.append("[AUDIO]     Step 7/7 — LLM judgment in progress...")
+        criteria_results = _step7_llm_judgment(tool_results, filtered_criteria, llm)
         live_updates.append(
-            f"[AUDIO]     Step 4/4 — LLM judgment complete: "
+            f"[AUDIO]     Step 7/7 — LLM judgment complete: "
             f"{sum(1 for c in criteria_results if c.get('met'))} criteria met"
         )
 
-    if meta.get("tool_status", "").startswith("tool_unavailable"):
-        warnings.append("mutagen not installed — audio metadata unavailable")
-    if quality.get("tool_status", "").startswith("tool_unavailable"):
-        warnings.append("librosa not installed — audio quality analysis unavailable")
-    if transcription.get("tool_status", "").startswith("tool_unavailable"):
-        warnings.append("faster-whisper not installed — transcription unavailable")
-    if transcription.get("word_count", 0) == 0:
-        warnings.append("Transcription returned empty — audio may be silent or inaudible")
-    if quality.get("clipping_detected"):
-        warnings.append("Audio clipping detected — distortion possible")
+    for step_name, res in tool_results.items():
+        if res.get("tool_status", "").startswith("tool_unavailable"):
+            warnings.append(f"Tool {step_name} unavailable: {res['tool_status']}")
 
     confidences = [c.get("confidence", 0.5) for c in criteria_results]
     agent_confidence = round(sum(confidences) / len(confidences), 3) if confidences else 0.5
-    agent_confidence = max(0.0, round(agent_confidence - (0.15 * failed_tools), 3))
+    agent_confidence = max(0.0, round(agent_confidence - (0.10 * failed_tools), 3))
 
     return {
         "domain": "audio",
@@ -272,13 +317,13 @@ if __name__ == "__main__":
     from langchain_ollama import ChatOllama
 
     parser = argparse.ArgumentParser(description="Run audio agent standalone")
-    parser.add_argument("audio_paths", nargs="+", help="Audio file paths")
-    parser.add_argument("--criteria", nargs="*", default=["Audio is clear"], help="Acceptance criteria")
+    parser.add_argument("audio_path", help="Audio file path")
+    parser.add_argument("--criteria", nargs="*", default=["Audio quality is good"], help="Acceptance criteria")
     args = parser.parse_args()
 
-    llm = ChatOllama(model="gpt-oss:120b-cloud", base_url="http://localhost:11434", temperature=0.1)
+    llm = ChatOllama(model= GENERAL_MODEL,base_url="http://localhost:11434", temperature=0.1)
     updates = []
-    report = run_audio_agent(args.audio_paths, args.criteria, llm, updates)
+    report = run_audio_agent(args.audio_path, args.criteria, llm, updates)
     for msg in updates:
         print(msg)
     print(json.dumps(report, indent=2))

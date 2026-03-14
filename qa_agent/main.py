@@ -45,9 +45,9 @@ def _status_badge(status: str | None) -> str:
 
 # ── Run QA Pipeline ──────────────────────────────────────────────────────────
 
-def run_qa(milestone_json_str: str, submission_path: str):
+def run_qa(milestone_json_str: str, submission_path: str, github_url: str, live_url: str, tier: str):
     """
-    Generator that yields (log_text, status_html, report_json) tuples.
+    Generator that yields (log_text, status_html, report_json, score_html, issues_html) tuples.
     Gradio streams these to the UI.
     """
     log_lines: list[str] = []
@@ -63,18 +63,26 @@ def run_qa(milestone_json_str: str, submission_path: str):
             f"❌ Invalid milestone JSON: {exc}",
             f"<span class='status-badge error'>❌ JSON Error</span>",
             {},
+            "",
+            ""
         )
         return
 
-    if not submission_path or not submission_path.strip():
-        submission_path = DEFAULT_SUBMISSION_PATH
+    sub_path = submission_path.strip() if submission_path else ""
+    github = github_url.strip() if github_url else ""
+    live = live_url.strip() if live_url else ""
+    t = tier.split(" ")[1] if tier else "2"  # "Tier 2" -> "2"
 
-    submission_path = submission_path.strip()
+    initial_state = build_initial_state(
+        milestone=milestone, 
+        submission_path=sub_path, 
+        github_url=github, 
+        live_url=live, 
+        tier=t
+    )
 
-    initial_state = build_initial_state(milestone, submission_path)
-
-    log_lines.append("🚀 Starting TrustVault QA Agent...")
-    yield "\n".join(log_lines), _status_html("routing"), {}
+    log_lines.append(f"🚀 Starting TrustVault QA Agent (Tier {t})...")
+    yield "\n".join(log_lines), _status_html("routing"), {}, "", ""
 
     final_report = {}
     last_status = "routing"
@@ -111,16 +119,16 @@ def run_qa(milestone_json_str: str, submission_path: str):
                     else:
                         last_status = s
 
-                yield "\n".join(log_lines), _status_html(last_status), final_report
+                yield "\n".join(log_lines), _status_html(last_status), final_report, _build_score_html(final_report), _build_issues_html(final_report)
 
     except Exception as exc:
         log_lines.append(f"❌ Pipeline error: {exc}")
-        yield "\n".join(log_lines), _status_html("error"), {}
+        yield "\n".join(log_lines), _status_html("error"), {}, "", ""
         return
 
     log_lines.append("─" * 60)
     log_lines.append(f"✅ QA pipeline complete — {_status_badge(last_status)}")
-    yield "\n".join(log_lines), _status_html(last_status), final_report
+    yield "\n".join(log_lines), _status_html(last_status), final_report, _build_score_html(final_report), _build_issues_html(final_report)
 
 
 def _status_html(status: str) -> str:
@@ -150,6 +158,74 @@ def _hex_to_rgb(hex_color: str) -> str:
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"{r},{g},{b}"
 
+
+def _build_score_html(report: dict) -> str:
+    if not report:
+        return ""
+    cs = report.get("completion_score", 0)
+    dps = report.get("deliverable_presence_score", 0)
+    ccs = report.get("criteria_compliance_score", 0)
+    conf = report.get("confidence", 0)
+    bar_color = "#22c55e" if cs >= 85 else "#f59e0b" if cs >= 60 else "#ef4444"
+    return f"""
+    <div style="display:flex;gap:24px;flex-wrap:wrap;padding:16px;
+         background:rgba(10,10,20,0.6);border-radius:12px;
+         border:1px solid rgba(99,102,241,0.2);">
+        <div style="flex:1;min-width:120px">
+            <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Final Score</div>
+            <div style="font-size:2rem;font-weight:700;color:{bar_color}">{cs:.1f}<span style="font-size:1rem;color:#6b7280">/100</span></div>
+            <div style="height:6px;background:rgba(99,102,241,0.15);border-radius:3px;margin-top:4px">
+                <div style="height:100%;width:{min(cs,100)}%;background:{bar_color};border-radius:3px;transition:width 1s"></div>
+            </div>
+        </div>
+        <div style="flex:1;min-width:100px">
+            <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Deliverable Presence</div>
+            <div style="font-size:1.4rem;font-weight:600;color:#818cf8">{dps*100:.0f}%</div>
+        </div>
+        <div style="flex:1;min-width:100px">
+            <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Criteria Compliance</div>
+            <div style="font-size:1.4rem;font-weight:600;color:#38bdf8">{ccs*100:.0f}%</div>
+        </div>
+        <div style="flex:1;min-width:100px">
+            <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Confidence</div>
+            <div style="font-size:1.4rem;font-weight:600;color:#a78bfa">{conf:.2f}</div>
+        </div>
+    </div>"""
+
+def _build_issues_html(report: dict) -> str:
+    if not report:
+        return ""
+    
+    html = ""
+    issues = report.get("issues", [])
+    if issues:
+        html += '<div style="margin-top:16px;"><h3 style="color:#ef4444;margin-bottom:8px">Failed Criteria & Recommendations</h3>'
+        for issue in issues:
+            html += f"""
+            <div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; padding:12px; margin-bottom:8px;">
+                <p style="margin:0 0 4px 0; font-weight:600; color:#fca5a5;">❌ {issue.get('criterion', '')}</p>
+                <p style="margin:0 0 4px 0; color:#e2e8f0; font-size: 0.9em;"><b>Evidence:</b> {issue.get('detail', '')}</p>
+            """
+            if issue.get("recommended_fix"):
+                html += f"""<p style="margin:0; color:#34d399; font-size: 0.9em;"><b>Recommended Fix:</b> {issue.get("recommended_fix")}</p>"""
+            html += "</div>"
+        html += "</div>"
+        
+    # Also render reasoning traces
+    for dr in report.get("domain_reports", []):
+        trace = dr.get("reasoning_trace")
+        domain = dr.get("domain", "Unknown").capitalize()
+        if trace:
+            html += f"""
+            <div style="margin-top:16px;">
+                <details style="background:rgba(99,102,241,0.05); border:1px solid rgba(99,102,241,0.2); border-radius:8px; padding:12px;">
+                    <summary style="cursor:pointer; font-weight:600; color:#818cf8;">🧠 View {domain} Agent Reasoning Trace</summary>
+                    <pre style="margin-top:8px; padding:12px; background:#020712; border-radius:6px; color:#a5f3fc; font-family:monospace; font-size:12px; white-space:pre-wrap;">{trace}</pre>
+                </details>
+            </div>
+            """
+            
+    return html
 
 # ── Gradio UI ────────────────────────────────────────────────────────────────
 
@@ -194,7 +270,7 @@ CSS = """
     background: rgba(15,15,30,0.8) !important;
     border: 1px solid rgba(99,102,241,0.2) !important;
     border-radius: 14px !important;
-    padding: 4px !important;
+    padding: 16px !important;
 }
 
 textarea, .gr-textbox textarea {
@@ -255,7 +331,7 @@ label, .gr-form label, .block > label {
     padding-bottom: 8px; margin-bottom: 12px;
 }
 
-#status-display { min-height: 48px; display:flex; align-items:center; }
+#status-display { min-height: 48px; display:flex; align-items:center; margin-bottom: 16px; }
 
 .metric-row {
     display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0;
@@ -299,7 +375,7 @@ with gr.Blocks(
 
             milestone_input = gr.Textbox(
                 label="Milestone JSON",
-                lines=18,
+                lines=10,
                 value=json.dumps(SAMPLE_SIMPLE, indent=2),
                 placeholder="Paste your milestone JSON here...",
                 elem_id="milestone-input",
@@ -309,12 +385,30 @@ with gr.Blocks(
                 load_simple_btn = gr.Button("📄 Load Simple", size="sm", variant="secondary")
                 load_complex_btn = gr.Button("📁 Load Complex", size="sm", variant="secondary")
 
-            gr.HTML('<div class="section-title" style="margin-top:16px">📂 Submission Path</div>')
+            gr.HTML('<div class="section-title" style="margin-top:16px">📂 Submission Evidence</div>')
+            
+            tier_dropdown = gr.Dropdown(
+                choices=["Tier 1", "Tier 2"],
+                value="Tier 2",
+                label="Agent Capabilities Tier",
+                allow_custom_value=False
+            )
+            
             submission_input = gr.Textbox(
-                label="Folder Path",
+                label="Folder Path (Local repo mapping)",
                 value=DEFAULT_SUBMISSION_PATH,
                 placeholder="./submissions/",
                 elem_id="submission-input",
+            )
+            
+            github_url_input = gr.Textbox(
+                label="GitHub URL",
+                placeholder="https://github.com/user/repo",
+            )
+            
+            live_url_input = gr.Textbox(
+                label="Live Deployment URL",
+                placeholder="https://staging.app.com",
             )
 
             with gr.Row():
@@ -329,25 +423,27 @@ with gr.Blocks(
                 elem_id="status-display",
             )
 
-            gr.HTML('<div class="section-title" style="margin-top:12px">📋 Live Analysis Log</div>')
+            gr.HTML('<div class="section-title">📋 Live Analysis Log</div>')
             log_output = gr.Textbox(
                 label="Live analysis log",
-                lines=20,
+                lines=15,
                 interactive=False,
                 elem_id="log-output",
                 elem_classes=["log-box"],
             )
+            
+            # Score Summary
+            with gr.Accordion("📈 Score Breakdown & Findings", open=False):
+                score_html = gr.HTML("")
+                issues_html = gr.HTML("")
 
     # ── Report Output ─────────────────────────────────────────────────────────
-    gr.HTML('<div class="section-title" style="margin:16px 0 8px">📊 Final QA Report</div>')
+    gr.HTML('<div class="section-title" style="margin:16px 0 8px">📊 Final QA Report (JSON)</div>')
     report_output = gr.JSON(
         label="",
         elem_id="report-output",
     )
 
-    # ── Score Summary ─────────────────────────────────────────────────────────
-    with gr.Accordion("📈 Score Breakdown", open=False):
-        score_html = gr.HTML("")
 
     # ── Event Wiring ──────────────────────────────────────────────────────────
     load_simple_btn.click(
@@ -364,56 +460,24 @@ with gr.Blocks(
             json.dumps(SAMPLE_SIMPLE, indent=2),
             DEFAULT_SUBMISSION_PATH,
             "",
+            "",
+            "Tier 2",
+            "",
             _status_html("idle"),
             {},
             "",
+            ""
         )
 
     start_over_btn.click(
         fn=reset_all,
-        outputs=[milestone_input, submission_input, log_output, status_display, report_output, score_html],
+        outputs=[milestone_input, submission_input, github_url_input, live_url_input, tier_dropdown, log_output, status_display, report_output, score_html, issues_html],
     )
 
-    def run_and_update(milestone_str, sub_path):
-        for log, status, report in run_qa(milestone_str, sub_path):
-            # Build score breakdown HTML
-            shtml = ""
-            if report:
-                cs = report.get("completion_score", 0)
-                dps = report.get("deliverable_presence_score", 0)
-                ccs = report.get("criteria_compliance_score", 0)
-                conf = report.get("confidence", 0)
-                bar_color = "#22c55e" if cs >= 85 else "#f59e0b" if cs >= 60 else "#ef4444"
-                shtml = f"""
-                <div style="display:flex;gap:24px;flex-wrap:wrap;padding:16px;
-                     background:rgba(10,10,20,0.6);border-radius:12px;
-                     border:1px solid rgba(99,102,241,0.2);">
-                    <div style="flex:1;min-width:120px">
-                        <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Final Score</div>
-                        <div style="font-size:2rem;font-weight:700;color:{bar_color}">{cs:.1f}<span style="font-size:1rem;color:#6b7280">/100</span></div>
-                        <div style="height:6px;background:rgba(99,102,241,0.15);border-radius:3px;margin-top:4px">
-                            <div style="height:100%;width:{min(cs,100)}%;background:{bar_color};border-radius:3px;transition:width 1s"></div>
-                        </div>
-                    </div>
-                    <div style="flex:1;min-width:100px">
-                        <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Deliverable Presence</div>
-                        <div style="font-size:1.4rem;font-weight:600;color:#818cf8">{dps*100:.0f}%</div>
-                    </div>
-                    <div style="flex:1;min-width:100px">
-                        <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Criteria Compliance</div>
-                        <div style="font-size:1.4rem;font-weight:600;color:#38bdf8">{ccs*100:.0f}%</div>
-                    </div>
-                    <div style="flex:1;min-width:100px">
-                        <div style="color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.08em">Confidence</div>
-                        <div style="font-size:1.4rem;font-weight:600;color:#a78bfa">{conf:.2f}</div>
-                    </div>
-                </div>"""
-            yield log, status, report, shtml
-
     run_btn.click(
-        fn=run_and_update,
-        inputs=[milestone_input, submission_input],
-        outputs=[log_output, status_display, report_output, score_html],
+        fn=run_qa,
+        inputs=[milestone_input, submission_input, github_url_input, live_url_input, tier_dropdown],
+        outputs=[log_output, status_display, report_output, score_html, issues_html],
     )
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

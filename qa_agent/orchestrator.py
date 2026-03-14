@@ -6,6 +6,38 @@ Scoring + aggregation logic.
 from typing import Optional
 import json
 import re
+import hashlib
+import os
+from pathlib import Path
+
+
+def compute_submission_hash(submission_path: str) -> str:
+    """Compute SHA-256 hash of all file contents in a directory."""
+    hasher = hashlib.sha256()
+    path = Path(submission_path)
+    if not path.exists():
+        return hasher.hexdigest()
+
+    if path.is_file():
+        hasher.update(path.read_bytes())
+        return hasher.hexdigest()
+
+    # It's a directory — hash all files iteratively
+    for root, _, files in os.walk(path):
+        # exclude node_modules and .git
+        if "node_modules" in root or ".git" in root:
+            continue
+        for file in sorted(files):
+            file_path = Path(root) / file
+            hasher.update(str(file_path.relative_to(path)).encode())
+            try:
+                # Read chunks to avoid memory errors on large files
+                with open(file_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hasher.update(chunk)
+            except Exception:
+                pass
+    return hasher.hexdigest()
 
 
 def filter_criteria_for_domain(criteria: list[str], domain: str, llm) -> list[str]:

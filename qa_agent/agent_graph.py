@@ -1,12 +1,14 @@
 """
-TrustVault QA Agent — LangGraph Workflow
-State machine: intake → routing → parallel domain agents → aggregation → scoring → report
+TrustVault QA Agent — LangGraph Workflow (Tier 2)
+State machine: intake(idempotency check) → routing(repo clone/URL check) → parallel domain agents → aggregation → scoring → report
 """
-
 from __future__ import annotations
 
 import sys
 import os
+import tempfile
+import re
+import json
 from pathlib import Path
 from typing import Optional, TypedDict, Annotated
 import operator
@@ -21,16 +23,24 @@ from tools.file_detector import detect_files, detect_code_projects
 from domain_agents.code_agent import run_code_agent
 from domain_agents.image_agent import run_image_agent
 from domain_agents.audio_agent import run_audio_agent
-from orchestrator import compute_score, aggregate_evidence, generate_escalation_summary
+from orchestrator import compute_score, aggregate_evidence, generate_escalation_summary, compute_submission_hash
 from tools.report_builder import build_report
+from tools.event_emitter import emit
+from tools.github_fetcher import clone_repo
+from tools.playground import check_live_url
+from db.connection import get_previous_evaluation, save_evaluation
 
 # ── State Schema ────────────────────────────────────────────────────────────
 
 class QAState(TypedDict):
     milestone: dict
     submission_path: str
+    github_url: Optional[str]
+    live_url: Optional[str]
+    tier: str
     detected_files: dict
     missing_deliverables: list
+    playground_report: Optional[dict]
     code_report: Optional[dict]
     image_report: Optional[dict]
     audio_report: Optional[dict]
@@ -42,23 +52,24 @@ class QAState(TypedDict):
     requires_human_review: bool
     live_updates: Annotated[list, operator.add]
     escalation_result: Optional[dict]
+    is_cached: bool
 
-
+# ---------
+VL_MODEL = "qwen3-vl:235b-instruct-cloud"
+GENERAL_MODEL = "qwen3.5:cloud"
+CODE_MODEL = "qwen3-coder-next:cloud"
 # ── LLM Singletons ──────────────────────────────────────────────────────────
 
 def _get_general_llm() -> ChatOllama:
-    """General-purpose LLM for criteria classification and non-code judgments."""
     return ChatOllama(
-        model="gpt-oss:120b-cloud",
+        model=GENERAL_MODEL,
         base_url="http://localhost:11434",
         temperature=0.1,
     )
 
-
 def _get_code_llm() -> ChatOllama:
-    """Code-specific LLM for code judgment step."""
     return ChatOllama(
-        model="qwen3-coder-next:cloud",
+        model=CODE_MODEL,
         base_url="http://localhost:11434",
         temperature=0.1,
     )
@@ -68,15 +79,80 @@ def _get_code_llm() -> ChatOllama:
 
 def intake_node(state: QAState) -> dict:
     milestone = state["milestone"]
-    return {"live_updates": [
-        f"[INTAKE]    Milestone #{milestone.get('milestone_id')} — '{milestone.get('objective', 'N/A')}'",
-        f"[INTAKE]    Submission path: {state['submission_path']}"
-    ]}
+    m_id = str(milestone.get('milestone_id', 'unknown'))
+    
+    emit("qa.started", {"milestone_id": m_id, "tier": state.get("tier", "2")})
+    
+    updates = [
+        f"[INTAKE]    Tier {state.get('tier', '2')} Agent Initialized",
+        f"[INTAKE]    Milestone #{m_id} — '{milestone.get('objective', 'N/A')}'"
+    ]
+    
+    sub_path = state.get("submission_path")
+    github_url = state.get("github_url")
+    
+    # 1. GitHub Clone if URL provided
+    if github_url and (not sub_path or not Path(sub_path).exists()):
+        updates.append(f"[INTAKE]    Cloning GitHub repository: {github_url}")
+        target_dir = str(Path(tempfile.gettempdir()) / f"trustvault_repo_{m_id}")
+        clone_result = clone_repo(github_url, target_dir)
+        if clone_result.get("success"):
+            sub_path = clone_result["local_path"]
+            updates.append(f"[INTAKE]    Clone complete (commit {clone_result.get('commit_hash', 'unknown')[:7]})")
+        else:
+            updates.append(f"[INTAKE]    ⚠ Clone failed: {clone_result.get('error', 'unknown error')}")
+            
+    # 2. Idempotency Check
+    if sub_path and Path(sub_path).exists():
+        sub_hash = compute_submission_hash(sub_path)
+        updates.append(f"[INTAKE]    Submission hash: {sub_hash[:12]}...")
+        cached_eval = get_previous_evaluation(m_id, sub_hash)
+        if cached_eval:
+            updates.append("[INTAKE]    ✓ Idempotency match found! Returning cached evaluation report.")
+            emit("qa.cached_report_used", {"milestone_id": m_id, "hash": sub_hash})
+            # We must parse the string back to a dict
+            final_rep = json.loads(cached_eval.report_json)
+            # Need to update state properly to bypass the rest
+            return {
+                "submission_path": sub_path,
+                "is_cached": True,
+                "final_report": final_rep,
+                "live_updates": updates
+            }
+            
+    updates.append(f"[INTAKE]    Submission path set to: {sub_path}")
+    return {"submission_path": sub_path, "live_updates": updates}
 
 
 def routing_node(state: QAState) -> dict:
     updates = []
-    submission = state["submission_path"]
+    submission = state.get("submission_path")
+    
+    playground_report = None
+    
+    # Check for live URLs in submission link or text (simulate if github_url looks like web URL)
+    live_url = state.get("live_url")
+    if not live_url and state.get("github_url") and not "github.com" in state["github_url"]:
+        # simple heuristic
+        if state["github_url"].startswith("http"):
+            live_url = state["github_url"]
+            
+    if live_url:
+        updates.append(f"[ROUTING]   Testing live URL via Playwright: {live_url}")
+        playground_report = check_live_url(live_url, timeout_sec=15)
+        if playground_report.get("errors"):
+            updates.append(f"[ROUTING]   ⚠ Live URL had {len(playground_report['errors'])} console/JS errors")
+        else:
+            updates.append(f"[ROUTING]   Live URL OK (Status {playground_report.get('http_status')})")
+
+    if not submission or not Path(submission).exists():
+        updates.append("[ROUTING]   No valid local files to scan.")
+        return {
+            "detected_files": {"code": [], "image": [], "audio": []},
+            "missing_deliverables": state["milestone"].get("deliverables", []),
+            "live_updates": updates,
+            "playground_report": playground_report
+        }
 
     files = detect_files(submission)
     code_projects = detect_code_projects(submission)
@@ -85,8 +161,6 @@ def routing_node(state: QAState) -> dict:
         f"[ROUTING]   Detected: {len(files['code'])} code files, "
         f"{len(files['image'])} image files, {len(files['audio'])} audio files"
     )
-    if code_projects:
-        updates.append(f"[ROUTING]   Code projects found: {code_projects}")
 
     # Check missing deliverables
     milestone = state["milestone"]
@@ -112,6 +186,7 @@ def routing_node(state: QAState) -> dict:
         "detected_files": files,
         "missing_deliverables": missing,
         "live_updates": updates,
+        "playground_report": playground_report
     }
 
 
@@ -121,8 +196,7 @@ def code_agent_node(state: QAState) -> dict:
     code_files = files.get("code", [])
 
     if not code_files:
-        updates.append("[CODE]      No code files detected — skipping")
-        return {"code_report": None, "live_updates": updates}
+        return {"code_report": None}
 
     # Find root project directories
     projects = detect_code_projects(state["submission_path"])
@@ -132,7 +206,16 @@ def code_agent_node(state: QAState) -> dict:
     general_llm = _get_general_llm()
     code_llm = _get_code_llm()
     acceptance_criteria = state["milestone"].get("acceptance_criteria", [])
+    
+    emit("domain.code.started", {"project": projects[0]})
     report = run_code_agent(projects[0], acceptance_criteria, general_llm, updates, code_llm=code_llm)
+    
+    # Attach playground report into tool_results if exists, so LLM can optionally see it in context 
+    # (requires modifying run_code_agent, but we just stuff it here for now)
+    if state.get("playground_report"):
+        report["tool_results"]["live_url_test"] = state["playground_report"]
+
+    emit("domain.code.completed", {"confidence": report.get("agent_confidence", 0.0)})
     return {"code_report": report, "live_updates": updates}
 
 
@@ -142,12 +225,18 @@ def image_agent_node(state: QAState) -> dict:
     image_files = files.get("image", [])
 
     if not image_files:
-        updates.append("[IMAGE]     No image files detected — skipping")
-        return {"image_report": None, "live_updates": updates}
+        return {"image_report": None}
 
     llm = _get_general_llm()
+    # Assume VLM is available or LLM handles it
+    vlm = ChatOllama(model=VL_MODEL, base_url="http://localhost:11434", temperature=0.1)
+    
     acceptance_criteria = state["milestone"].get("acceptance_criteria", [])
-    report = run_image_agent(image_files, acceptance_criteria, llm, updates)
+    
+    emit("domain.image.started", {"count": len(image_files)})
+    report = run_image_agent(image_files, acceptance_criteria, llm, updates, vlm=vlm)
+    emit("domain.image.completed", {"confidence": report.get("agent_confidence", 0.0)})
+    
     return {"image_report": report, "live_updates": updates}
 
 
@@ -157,12 +246,15 @@ def audio_agent_node(state: QAState) -> dict:
     audio_files = files.get("audio", [])
 
     if not audio_files:
-        updates.append("[AUDIO]     No audio files detected — skipping")
-        return {"audio_report": None, "live_updates": updates}
+        return {"audio_report": None}
 
     llm = _get_general_llm()
     acceptance_criteria = state["milestone"].get("acceptance_criteria", [])
-    report = run_audio_agent(audio_files, acceptance_criteria, llm, updates)
+    
+    emit("domain.audio.started", {"count": len(audio_files)})
+    report = run_audio_agent(audio_files[0], acceptance_criteria, llm, updates)
+    emit("domain.audio.completed", {"confidence": report.get("agent_confidence", 0.0)})
+    
     return {"audio_report": report, "live_updates": updates}
 
 
@@ -207,16 +299,42 @@ def escalation_node(state: QAState) -> dict:
 
 
 def report_node(state: QAState) -> dict:
+    # If returned from cache, skip report building
+    if state.get("is_cached") and state.get("final_report"):
+        return {"live_updates": ["[RESULT]    Cache Hit! Returning fast."]}
+        
     report = build_report(state)
     updates = [
         f"[RESULT]    Status: {report.get('status', '?').upper()} | "
         f"Score: {report.get('completion_score', 0):.1f} | "
         f"Confidence: {report.get('confidence', 0):.2f}"
     ]
+    
+    # Save evaluation to DB
+    if state.get("submission_path"):
+        sub_hash = compute_submission_hash(state["submission_path"])
+        m_id = str(state["milestone"].get("milestone_id", "unknown"))
+        
+        # Inject context for DB
+        report["milestone_id"] = m_id
+        report["submission_hash"] = sub_hash
+        report["tier"] = state.get("tier", "2")
+        
+        save_result = save_evaluation(report)
+        if save_result:
+            updates.append("[RESULT]    Saved evaluation to database.")
+    
+    emit("qa.completed", {"status": report.get("status"), "score": report.get("completion_score")})
     return {"final_report": report, "live_updates": updates}
 
 
-# ── Routing Condition ────────────────────────────────────────────────────────
+# ── Routing Conditions ───────────────────────────────────────────────────────
+
+def post_intake_route(state: QAState) -> str:
+    """If cache found, route directly to report/END."""
+    if state.get("is_cached"):
+        return "report"
+    return "routing"
 
 def should_escalate(state: QAState) -> str:
     """Route to escalation if confidence < 0.70."""
@@ -240,7 +358,12 @@ def build_graph():
     builder.add_node("report", report_node)
 
     builder.set_entry_point("intake")
-    builder.add_edge("intake", "routing")
+    
+    builder.add_conditional_edges(
+        "intake",
+        post_intake_route,
+        {"routing": "routing", "report": "report"}
+    )
 
     # Parallel domain agents — LangGraph fans out via multiple edges from routing
     builder.add_edge("routing", "code_agent")
@@ -266,12 +389,16 @@ def build_graph():
 
 # ── Initial State Builder ────────────────────────────────────────────────────
 
-def build_initial_state(milestone: dict, submission_path: str) -> QAState:
+def build_initial_state(milestone: dict, submission_path: str = "", github_url: str = "", live_url: str = "", tier: str = "2") -> QAState:
     return QAState(
         milestone=milestone,
         submission_path=submission_path,
+        github_url=github_url,
+        live_url=live_url,
+        tier=tier,
         detected_files={},
         missing_deliverables=[],
+        playground_report=None,
         code_report=None,
         image_report=None,
         audio_report=None,
@@ -283,6 +410,7 @@ def build_initial_state(milestone: dict, submission_path: str) -> QAState:
         requires_human_review=False,
         live_updates=[],
         escalation_result=None,
+        is_cached=False,
     )
 
 

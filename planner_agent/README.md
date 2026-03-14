@@ -164,6 +164,35 @@ python main.py
 python main.py --prompt "Build a real-time chat app with WebSockets, React frontend, and message history."
 ```
 
+### Option 3 — Backend API for Frontend (FastAPI)
+
+You can run the planner agent as a REST API backend to consume it from a React frontend.
+
+```bash
+source .venv/bin/activate
+uvicorn api:api --reload --port 8000
+```
+
+**React / Frontend Usage Example:**
+```javascript
+const generateMilestones = async (promptText) => {
+  try {
+    const response = await fetch('http://localhost:8000/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_prompt: promptText })
+    });
+    
+    const data = await response.json();
+    console.log("Status:", data.status);
+    console.log("Generated Milestones:", data.milestones);
+  } catch (error) {
+    console.error("Failed to generate plan:", error);
+  }
+};
+```
+
+
 ---
 
 ## 🧪 Running Tests
@@ -239,7 +268,7 @@ Critic evaluates:
 - [ ] PDF contract export from milestone JSON
 - [ ] Multi-currency `amount` support (₹ / $ / €)
 - [ ] LangSmith tracing integration for observability
-- [ ] REST API wrapper (FastAPI) for backend service integration
+- [x] REST API wrapper (FastAPI) for backend service integration
 
 ---
 

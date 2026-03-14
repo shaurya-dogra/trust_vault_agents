@@ -87,6 +87,58 @@ python main.py
    - OR, provide a **Live Deployment URL** (The agent will use Playwright to verify it).
 4. Click **"🚀 Run QA Analysis"** and watch the live streaming logs and reasoning traces!
 
+### Option 2 — Backend API for Frontend (FastAPI)
+
+You can run the QA agent as a REST API backend to consume it from a React frontend. The backend streams updates via Server-Sent Events (SSE).
+
+```bash
+uvicorn api:api --reload --port 8001
+```
+
+**React / Frontend Usage Example:**
+```javascript
+const runQaStreaming = async (milestoneData) => {
+  try {
+    const response = await fetch('http://localhost:8001/api/qa/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        milestone: milestoneData,
+        tier: "Tier 2",
+        submission_path: "./sample_data/submissions"
+      })
+    });
+    
+    // Read the streaming SSE response
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      const chunk = decoder.decode(value);
+      // Basic split by SSE message format (data: {...})
+      const lines = chunk.split('\\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = JSON.parse(line.substring(6));
+          if (data.log) {
+            console.log("LOG:", data.log);
+          }
+          if (data.report) {
+            console.log("FINAL REPORT:", data.report);
+            console.log("Download PDF from:", `http://localhost:8001${data.pdf_download_url}`);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Failed to run QA:", error);
+  }
+};
+```
+
 ## Troubleshooting
 
 - **"ReAct agent error: Connection Error"**: Ensure the Ollama background service is running.

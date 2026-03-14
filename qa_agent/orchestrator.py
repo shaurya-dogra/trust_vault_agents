@@ -11,32 +11,34 @@ import re
 def filter_criteria_for_domain(criteria: list[str], domain: str, llm) -> list[str]:
     """
     Use LLM to determine which criteria are relevant for a specific domain agent.
+    Returns only the relevant subset.
     """
     if not criteria:
         return []
-        
-    prompt = f"""You are a routing agent for a QA system.
-We have three domain agents:
-1. 'code': analyzes source code, javascript, react, npm, linting, tests, security, build.
-2. 'image': analyzes design mockups, UI screenshots, dimensions, colors, visuals.
-3. 'audio': analyzes audio files, voice, sound quality, spoken words, length.
 
-Given the following list of acceptance criteria, return a JSON list of strictly the exactly matched string criteria that are relevant to the primary '{domain}' domain.
-Do not modify the strings. If none are relevant to '{domain}', return an empty list [].
-Only output valid JSON, like: ["Criterion 1", "Criterion 2"]
+    prompt = f"""You are a criteria classifier for a QA system.
+Given a list of acceptance criteria and a domain ("code", "image", or "audio"),
+return ONLY the criteria that this domain's tools can meaningfully evaluate.
 
+Domain: {domain}
 Criteria: {json.dumps(criteria)}
-"""
+
+Return JSON only: {{"relevant": ["criterion 1", "criterion 2"]}}"""
+
     try:
         response = llm.invoke(prompt)
         raw = response.content.strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         data = json.loads(raw)
-        if isinstance(data, list):
-            # Ensure we only return exact matches to avoid string confusion later
-            return [c for c in data if c in criteria]
-        return []
+        if isinstance(data, dict):
+            relevant = data.get("relevant", [])
+        elif isinstance(data, list):
+            relevant = data
+        else:
+            relevant = []
+        # Ensure we only return exact matches
+        return [c for c in relevant if c in criteria]
     except Exception as exc:
         print(f"Warning: criteria filtering failed for {domain}: {exc}")
         # Fallback to no filter to be safe
@@ -50,12 +52,20 @@ def compute_score(state: dict) -> tuple[float, str, float, bool]:
     Formula:
         DPS = delivered_count / required_deliverable_count
         CCS = weighted average of criteria pass rates across all evaluated criteria
+              computed ONLY from domain-relevant criteria results.
+              Do NOT average across all three agents if image/audio
+              had zero relevant criteria — exclude them from CCS.
+
         final_score = DPS * CCS * 100
 
     Thresholds:
         >= 85  → "completed"
         60-84  → "partial_completion"
         < 60   → "not_completed"
+
+    Confidence = mean of all per-criterion confidence scores
+                 across relevant domain reports only.
+    If confidence < 0.70 → requires_human_review = True
 
     Returns: (completion_score, status, confidence, requires_human_review)
     """
@@ -65,12 +75,14 @@ def compute_score(state: dict) -> tuple[float, str, float, bool]:
     required_count = max(len(required_deliverables), 1)
     dps = delivered_count / required_count
 
-    # Gather all criterion results from domain agents
+    # Gather criterion results ONLY from domains that had relevant criteria
     all_criteria: list[dict] = []
     for domain in ("code", "image", "audio"):
         report = state.get(f"{domain}_report")
         if report:
-            all_criteria.extend(report.get("criteria_results", []))
+            cr = report.get("criteria_results", [])
+            if len(cr) > 0:  # Only include if domain had relevant criteria
+                all_criteria.extend(cr)
 
     if all_criteria:
         ccs = sum(1 for c in all_criteria if c.get("met")) / len(all_criteria)
@@ -103,13 +115,15 @@ def aggregate_evidence(state: dict) -> dict:
     required = max(len(required_deliverables), 1)
     dps = delivered / required
 
+    # Only include domains with relevant criteria in CCS
     all_criteria: list[dict] = []
     domain_summaries = {}
     for domain in ("code", "image", "audio"):
         report = state.get(f"{domain}_report")
         if report:
             crs = report.get("criteria_results", [])
-            all_criteria.extend(crs)
+            if len(crs) > 0:
+                all_criteria.extend(crs)
             met = sum(1 for c in crs if c.get("met"))
             domain_summaries[domain] = {
                 "criteria_met": met,
@@ -132,8 +146,6 @@ def generate_escalation_summary(state: dict, llm) -> dict:
     """
     Generate escalation summary when confidence is low.
     """
-    import json
-    import re
     import prompts
 
     all_criteria: list[dict] = []
@@ -142,18 +154,19 @@ def generate_escalation_summary(state: dict, llm) -> dict:
         if report:
             all_criteria.extend(report.get("criteria_results", []))
 
-    low_conf = [
-        c.get("criterion") for c in all_criteria if c.get("confidence", 1.0) < 0.70
-    ]
-    evidence_summary = {
-        domain: state.get(f"{domain}_report", {}).get("agent_confidence")
-        for domain in ("code", "image", "audio")
-        if state.get(f"{domain}_report")
-    }
+    evidence_summary = {}
+    for domain in ("code", "image", "audio"):
+        report = state.get(f"{domain}_report")
+        if report:
+            evidence_summary[domain] = {
+                "agent_confidence": report.get("agent_confidence"),
+                "criteria_met": sum(1 for c in report.get("criteria_results", []) if c.get("met")),
+                "criteria_total": len(report.get("criteria_results", [])),
+                "warnings": report.get("warnings", []),
+            }
 
     prompt = prompts.ESCALATION_PROMPT.format(
-        evidence=json.dumps(evidence_summary),
-        low_confidence_criteria=json.dumps(low_conf),
+        evidence=json.dumps(evidence_summary, indent=2),
     )
     try:
         response = llm.invoke(prompt)
@@ -162,7 +175,10 @@ def generate_escalation_summary(state: dict, llm) -> dict:
             raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         return json.loads(raw)
     except Exception as exc:
+        low_conf = [
+            c.get("criterion") for c in all_criteria if c.get("confidence", 1.0) < 0.70
+        ]
         return {
             "reason": f"Escalation analysis unavailable: {exc}",
-            "unverifiable_criteria": low_conf,
+            "unverifiable_criteria": [{"criterion": c, "reason": "low confidence"} for c in low_conf],
         }

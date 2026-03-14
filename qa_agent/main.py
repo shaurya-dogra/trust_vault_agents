@@ -37,7 +37,7 @@ def _status_badge(status: str | None) -> str:
         "partial_completion": "⚠️ Partial Completion",
         "not_completed": "❌ Not Completed",
         "routing": "🔍 Routing...",
-        "analyzing": "⚙️ Analyzing...",
+        "analyzing": "⚙️ Analysing...",
         "idle": "💤 Idle — waiting for input",
         "needs_review": "🔎 Needs Human Review",
     }
@@ -84,7 +84,6 @@ def run_qa(milestone_json_str: str, submission_path: str):
             for node_name, node_output in event.items():
                 # Stream live updates
                 new_updates = node_output.get("live_updates", [])
-                # Only show updates added in THIS node (not the accumulated list)
                 for msg in new_updates:
                     if msg not in log_lines:
                         log_lines.append(msg)
@@ -271,6 +270,11 @@ label, .gr-form label, .block > label {
 
 with gr.Blocks(
     title="TrustVault QA Agent",
+    css=CSS,
+    theme=gr.themes.Base(
+        primary_hue=gr.themes.colors.violet,
+        neutral_hue=gr.themes.colors.slate,
+    ),
 ) as demo:
     # ── Header ────────────────────────────────────────────────────────────────
     gr.HTML("""
@@ -313,7 +317,9 @@ with gr.Blocks(
                 elem_id="submission-input",
             )
 
-            run_btn = gr.Button("🚀 Run QA Analysis", variant="primary", size="lg")
+            with gr.Row():
+                run_btn = gr.Button("🚀 Run QA Analysis", variant="primary", size="lg")
+                start_over_btn = gr.Button("🔄 Start Over", variant="secondary", size="lg")
 
         # ── Right Panel ───────────────────────────────────────────────────────
         with gr.Column(scale=7, elem_classes=["panel-card"]):
@@ -325,8 +331,8 @@ with gr.Blocks(
 
             gr.HTML('<div class="section-title" style="margin-top:12px">📋 Live Analysis Log</div>')
             log_output = gr.Textbox(
-                label="",
-                lines=16,
+                label="Live analysis log",
+                lines=20,
                 interactive=False,
                 elem_id="log-output",
                 elem_classes=["log-box"],
@@ -351,6 +357,21 @@ with gr.Blocks(
     load_complex_btn.click(
         fn=lambda: json.dumps(SAMPLE_COMPLEX, indent=2),
         outputs=milestone_input,
+    )
+
+    def reset_all():
+        return (
+            json.dumps(SAMPLE_SIMPLE, indent=2),
+            DEFAULT_SUBMISSION_PATH,
+            "",
+            _status_html("idle"),
+            {},
+            "",
+        )
+
+    start_over_btn.click(
+        fn=reset_all,
+        outputs=[milestone_input, submission_input, log_output, status_display, report_output, score_html],
     )
 
     def run_and_update(milestone_str, sub_path):
@@ -403,9 +424,4 @@ if __name__ == "__main__":
         server_port=7860,
         share=False,
         show_error=True,
-        css=CSS,
-        theme=gr.themes.Base(
-            primary_hue=gr.themes.colors.violet,
-            neutral_hue=gr.themes.colors.slate,
-        ),
     )

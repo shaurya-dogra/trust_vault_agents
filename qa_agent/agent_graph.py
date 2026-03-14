@@ -44,11 +44,21 @@ class QAState(TypedDict):
     escalation_result: Optional[dict]
 
 
-# ── LLM Singleton ────────────────────────────────────────────────────────────
+# ── LLM Singletons ──────────────────────────────────────────────────────────
 
-def _get_llm() -> ChatOllama:
+def _get_general_llm() -> ChatOllama:
+    """General-purpose LLM for criteria classification and non-code judgments."""
     return ChatOllama(
         model="gpt-oss:120b-cloud",
+        base_url="http://localhost:11434",
+        temperature=0.1,
+    )
+
+
+def _get_code_llm() -> ChatOllama:
+    """Code-specific LLM for code judgment step."""
+    return ChatOllama(
+        model="qwen3-coder-next:cloud",
         base_url="http://localhost:11434",
         temperature=0.1,
     )
@@ -87,11 +97,11 @@ def routing_node(state: QAState) -> dict:
         has_code = len(files["code"]) > 0 or len(code_projects) > 0
         has_image = len(files["image"]) > 0
         has_audio = len(files["audio"]) > 0
-        if any(w in dl for w in ["github", "repository", "repo", "code", "source"]) and not has_code:
+        if any(w in dl for w in ["github", "repository", "repo", "code", "source", "test", "unit"]) and not has_code:
             missing.append(d)
         elif any(w in dl for w in ["design", "mockup", "figma", "pdf", "image", "screenshot"]) and not has_image:
             missing.append(d)
-        elif any(w in dl for w in ["audio", "mp3", "wav", "recording"]) and not has_audio:
+        elif any(w in dl for w in ["audio", "mp3", "wav", "recording", "walkthrough"]) and not has_audio:
             missing.append(d)
 
     updates.append(
@@ -117,12 +127,12 @@ def code_agent_node(state: QAState) -> dict:
     # Find root project directories
     projects = detect_code_projects(state["submission_path"])
     if not projects:
-        # Use parent directory of first code file
         projects = [str(Path(code_files[0]).parent)]
 
-    llm = _get_llm()
+    general_llm = _get_general_llm()
+    code_llm = _get_code_llm()
     acceptance_criteria = state["milestone"].get("acceptance_criteria", [])
-    report = run_code_agent(projects[0], acceptance_criteria, llm, updates)
+    report = run_code_agent(projects[0], acceptance_criteria, general_llm, updates, code_llm=code_llm)
     return {"code_report": report, "live_updates": updates}
 
 
@@ -135,7 +145,7 @@ def image_agent_node(state: QAState) -> dict:
         updates.append("[IMAGE]     No image files detected — skipping")
         return {"image_report": None, "live_updates": updates}
 
-    llm = _get_llm()
+    llm = _get_general_llm()
     acceptance_criteria = state["milestone"].get("acceptance_criteria", [])
     report = run_image_agent(image_files, acceptance_criteria, llm, updates)
     return {"image_report": report, "live_updates": updates}
@@ -150,7 +160,7 @@ def audio_agent_node(state: QAState) -> dict:
         updates.append("[AUDIO]     No audio files detected — skipping")
         return {"audio_report": None, "live_updates": updates}
 
-    llm = _get_llm()
+    llm = _get_general_llm()
     acceptance_criteria = state["milestone"].get("acceptance_criteria", [])
     report = run_audio_agent(audio_files, acceptance_criteria, llm, updates)
     return {"audio_report": report, "live_updates": updates}
@@ -190,7 +200,7 @@ def scoring_node(state: QAState) -> dict:
 
 def escalation_node(state: QAState) -> dict:
     updates = ["[ESCALATE]  Confidence below 0.70 — generating escalation summary..."]
-    llm = _get_llm()
+    llm = _get_general_llm()
     result = generate_escalation_summary(state, llm)
     updates.append(f"[ESCALATE]  Reason: {result.get('reason', '')[:100]}")
     return {"escalation_result": result, "live_updates": updates}
@@ -209,7 +219,9 @@ def report_node(state: QAState) -> dict:
 # ── Routing Condition ────────────────────────────────────────────────────────
 
 def should_escalate(state: QAState) -> str:
-    return "escalation" if state.get("requires_human_review") else "report"
+    """Route to escalation if confidence < 0.70."""
+    confidence = state.get("confidence", 1.0)
+    return "escalation" if confidence < 0.70 else "report"
 
 
 # ── Graph Assembly ───────────────────────────────────────────────────────────

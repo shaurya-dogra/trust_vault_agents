@@ -9,8 +9,11 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import prompts
 from orchestrator import filter_criteria_for_domain
+from schema import CriterionResult
 
 
 def _step1_metadata(image_path: str) -> dict:
@@ -21,6 +24,7 @@ def _step1_metadata(image_path: str) -> dict:
         img = Image.open(image_path)
         dpi = img.info.get("dpi", (72, 72))
         return {
+            "filename": Path(image_path).name,
             "width_px": img.width,
             "height_px": img.height,
             "dpi": list(dpi) if isinstance(dpi, tuple) else [dpi, dpi],
@@ -31,9 +35,9 @@ def _step1_metadata(image_path: str) -> dict:
             "tool_status": "ok",
         }
     except ImportError:
-        return {"tool_status": "tool_unavailable: pillow not installed"}
+        return {"filename": Path(image_path).name, "tool_status": "tool_unavailable: pillow not installed"}
     except Exception as exc:
-        return {"tool_status": f"error: {exc}"}
+        return {"filename": Path(image_path).name, "tool_status": f"error: {exc}"}
 
 
 def _hex(rgb: tuple) -> str:
@@ -73,9 +77,7 @@ def _step3_structural(image_path: str) -> dict:
         edge_density = float(np.count_nonzero(edges)) / total_px
         brightness_mean = float(np.mean(gray))
         contrast_std = float(np.std(gray))
-        # Whitespace: pixels > 240
         whitespace_ratio = float(np.sum(gray > 240)) / total_px
-        # Text regions estimate via contours
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         text_regions = len([c for c in contours if 50 < cv2.contourArea(c) < 5000])
@@ -93,28 +95,51 @@ def _step3_structural(image_path: str) -> dict:
         return {"tool_status": f"error: {exc}"}
 
 
-def _step4_llm_vision(image_path: str, metadata: dict, acceptance_criteria: list, llm) -> list:
-    """LLM text-based judgment using extracted image metadata."""
-    try:
-        prompt = prompts.IMAGE_VISION_PROMPT.format(
-            metadata=json.dumps(metadata, indent=2),
-            acceptance_criteria=json.dumps(acceptance_criteria),
-        )
-        response = llm.invoke(prompt)
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
-        data = json.loads(raw)
-        results = data.get("criteria_results", [])
-        for r in results:
-            r.setdefault("source", "gpt-oss/metadata-analysis")
-        return results
-    except Exception as exc:
-        return [
-            {"criterion": c, "met": False, "confidence": 0.3,
-             "evidence": f"LLM metadata judgment failed: {exc}", "source": "llm_unavailable"}
-            for c in acceptance_criteria
-        ]
+def _validate_criteria_results(raw_results: list, source_default: str) -> list[dict]:
+    """Validate LLM criteria results through Pydantic CriterionResult."""
+    validated = []
+    for r in raw_results:
+        try:
+            r.setdefault("source", source_default)
+            cr = CriterionResult(**r)
+            validated.append(cr.model_dump())
+        except Exception:
+            r.setdefault("met", False)
+            r.setdefault("confidence", 0.3)
+            r.setdefault("evidence", "Validation error on LLM output")
+            r.setdefault("source", source_default)
+            validated.append(r)
+    return validated
+
+
+def _step4_llm_judgment(all_image_metadata: dict, analysis_results: dict,
+                        acceptance_criteria: list, llm) -> list:
+    """LLM text-based judgment using extracted image metadata. Retry once on parse failure."""
+    prompt = prompts.IMAGE_JUDGMENT_PROMPT.format(
+        all_image_metadata=json.dumps(all_image_metadata, indent=2),
+        analysis_results=json.dumps(analysis_results, indent=2),
+        acceptance_criteria=json.dumps(acceptance_criteria),
+    )
+
+    for attempt in range(2):
+        try:
+            if attempt == 1:
+                prompt = prompt + "\n\n" + prompts.VALIDATION_RETRY_PROMPT
+            response = llm.invoke(prompt)
+            raw = response.content.strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+            data = json.loads(raw)
+            results = data.get("criteria_results", [])
+            return _validate_criteria_results(results, "gpt-oss/image-judge")
+        except Exception:
+            if attempt == 0:
+                continue
+            return [
+                {"criterion": c, "met": False, "confidence": 0.0,
+                 "evidence": "LLM output could not be parsed", "source": "llm_error"}
+                for c in acceptance_criteria
+            ]
 
 
 def run_image_agent(image_paths: list, acceptance_criteria: list, llm, live_updates: list) -> dict:
@@ -131,50 +156,69 @@ def run_image_agent(image_paths: list, acceptance_criteria: list, llm, live_upda
             "warnings": ["No image files provided"],
         }
 
-    # Analyze primary image (use first, note others)
-    primary = image_paths[0]
-    live_updates.append(f"[IMAGE]     Analyzing {len(image_paths)} image file(s), primary: {Path(primary).name}")
-
-    # Step 1
-    meta = _step1_metadata(primary)
-    
+    # Step 1 — Metadata for ALL images
     all_image_metadata = {}
     for p in image_paths:
         all_image_metadata[Path(p).name] = _step1_metadata(p)
+
+    # Select primary image: largest by width × height
+    primary = image_paths[0]
+    max_area = 0
+    for p in image_paths:
+        meta = all_image_metadata.get(Path(p).name, {})
+        w = meta.get("width_px", 0)
+        h = meta.get("height_px", 0)
+        area = w * h
+        if area > max_area:
+            max_area = area
+            primary = p
+
+    primary_meta = all_image_metadata[Path(primary).name]
+    live_updates.append(f"[IMAGE]     Analyzing {len(image_paths)} image file(s), primary: {Path(primary).name}")
     live_updates.append(
-        f"[IMAGE]     Step 1/4 — Metadata: {meta.get('width_px', '?')}×{meta.get('height_px', '?')}, "
-        f"{meta.get('color_mode', '?')}, {meta.get('file_size_kb', '?')}KB"
+        f"[IMAGE]     Step 1/4 — Metadata: {primary_meta.get('width_px', '?')}×{primary_meta.get('height_px', '?')}, "
+        f"{primary_meta.get('color_mode', '?')}, {primary_meta.get('file_size_kb', '?')}KB"
     )
 
-    # Step 2
+    failed_tools = 0
+    if primary_meta.get("tool_status", "").startswith("tool_unavailable"):
+        failed_tools += 1
+
+    # Step 2 — Color analysis (primary only)
     colors = _step2_color_analysis(primary)
+    if colors.get("tool_status", "").startswith("tool_unavailable") or colors.get("tool_status", "").startswith("error"):
+        failed_tools += 1
     live_updates.append(
         f"[IMAGE]     Step 2/4 — Colors: dominant={colors.get('dominant_color_hex', '?')}, "
         f"palette={colors.get('palette_size', 0)} colors"
     )
 
-    # Step 3
+    # Step 3 — Structural analysis (primary only)
     structural = _step3_structural(primary)
+    if structural.get("tool_status", "").startswith("tool_unavailable") or structural.get("tool_status", "").startswith("error"):
+        failed_tools += 1
     live_updates.append(
         f"[IMAGE]     Step 3/4 — Structure: edge_density={structural.get('edge_density', '?')}, "
         f"brightness={structural.get('brightness_mean', '?')}"
     )
 
-    # Multiple images summary
-    all_files_summary = [Path(p).name for p in image_paths]
     tool_results = {
         "primary_image": Path(primary).name,
-        "all_images": all_files_summary,
+        "all_images": [Path(p).name for p in image_paths],
         "all_image_metadata": all_image_metadata,
-        "metadata": meta,
         "color_analysis": colors,
         "structural_analysis": structural,
     }
 
-    # Step 4 — Filter criteria & LLM Vision
+    analysis_results = {
+        "color_analysis": colors,
+        "structural_analysis": structural,
+    }
+
+    # Step 4 — Filter criteria & LLM Judgment
     filtered_criteria = filter_criteria_for_domain(acceptance_criteria, "image", llm)
     live_updates.append(f"[IMAGE]     Relevant criteria for domain: {len(filtered_criteria)}/{len(acceptance_criteria)}")
-    
+
     warnings = []
 
     if len(filtered_criteria) == 0:
@@ -183,20 +227,22 @@ def run_image_agent(image_paths: list, acceptance_criteria: list, llm, live_upda
         criteria_results = []
     else:
         live_updates.append("[IMAGE]     Step 4/4 — LLM judgment in progress...")
-        criteria_results = _step4_llm_vision(primary, tool_results, filtered_criteria, llm)
+        criteria_results = _step4_llm_judgment(all_image_metadata, analysis_results, filtered_criteria, llm)
         live_updates.append(
-            f"[IMAGE]     Step 4/4 — Vision judgment complete: "
+            f"[IMAGE]     Step 4/4 — LLM judgment complete: "
             f"{sum(1 for c in criteria_results if c.get('met'))} criteria met"
         )
+
     if len(image_paths) > 1:
         warnings.append(f"{len(image_paths)} images found; only primary ({Path(primary).name}) fully analyzed")
-    if meta.get("tool_status", "").startswith("tool_unavailable"):
+    if primary_meta.get("tool_status", "").startswith("tool_unavailable"):
         warnings.append("Pillow not installed — metadata unavailable")
     if structural.get("tool_status", "").startswith("tool_unavailable"):
         warnings.append("OpenCV not installed — structural analysis unavailable")
 
     confidences = [c.get("confidence", 0.5) for c in criteria_results]
     agent_confidence = round(sum(confidences) / len(confidences), 3) if confidences else 0.5
+    agent_confidence = max(0.0, round(agent_confidence - (0.15 * failed_tools), 3))
 
     return {
         "domain": "image",

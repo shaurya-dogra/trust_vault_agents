@@ -311,9 +311,11 @@ def report_node(state: QAState) -> dict:
     ]
     
     # Save evaluation to DB
+    m_id = str(state["milestone"].get("milestone_id", "unknown"))
+    sub_hash = "no_submission"
+    
     if state.get("submission_path"):
         sub_hash = compute_submission_hash(state["submission_path"])
-        m_id = str(state["milestone"].get("milestone_id", "unknown"))
         
         # Inject context for DB
         report["milestone_id"] = m_id
@@ -323,7 +325,20 @@ def report_node(state: QAState) -> dict:
         save_result = save_evaluation(report)
         if save_result:
             updates.append("[RESULT]    Saved evaluation to database.")
-    
+            
+    # Save to local results report folder
+    reports_dir = Path(__file__).parent / "results report"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / f"qa_report_{m_id}_{sub_hash}.pdf"
+    try:
+        from report_generator.generator import generate_qa_report_pdf
+        pdf_bytes = generate_qa_report_pdf(report)
+        with open(report_path, "wb") as f:
+            f.write(pdf_bytes)
+        updates.append(f"[RESULT]    Saved PDF report to {report_path.name}")
+    except Exception as e:
+        updates.append(f"[RESULT]    Failed to save PDF report: {e}")
+
     emit("qa.completed", {"status": report.get("status"), "score": report.get("completion_score")})
     return {"final_report": report, "live_updates": updates}
 

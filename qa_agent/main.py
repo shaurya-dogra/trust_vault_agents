@@ -12,7 +12,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import gradio as gr
+import tempfile
+from report_generator.generator import generate_qa_report_pdf
 from agent_graph import build_initial_state, graph
+
+def make_pdf_download(report_dict):
+    if not report_dict:
+        return gr.update(visible=False)
+    pdf_bytes = generate_qa_report_pdf(report_dict)
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".pdf",
+        prefix="VaultedEscrow_QA_Milestone_"
+    )
+    tmp.write(pdf_bytes)
+    tmp.close()
+    return gr.update(value=tmp.name, visible=True)
 
 # ── Sample Milestone ──────────────────────────────────────────────────────────
 
@@ -439,6 +454,13 @@ with gr.Blocks(
 
     # ── Report Output ─────────────────────────────────────────────────────────
     gr.HTML('<div class="section-title" style="margin:16px 0 8px">📊 Final QA Report (JSON)</div>')
+    
+    report_download = gr.File(
+        label="Download PDF Report",
+        visible=False,
+        file_types=[".pdf"],
+    )
+    
     report_output = gr.JSON(
         label="",
         elem_id="report-output",
@@ -478,6 +500,10 @@ with gr.Blocks(
         fn=run_qa,
         inputs=[milestone_input, submission_input, github_url_input, live_url_input, tier_dropdown],
         outputs=[log_output, status_display, report_output, score_html, issues_html],
+    ).then(
+        fn=make_pdf_download,
+        inputs=[report_output],
+        outputs=[report_download]
     )
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

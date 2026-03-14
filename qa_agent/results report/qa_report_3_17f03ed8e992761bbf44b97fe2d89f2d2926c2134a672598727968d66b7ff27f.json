@@ -1,0 +1,181 @@
+{
+  "milestone_id": "3",
+  "evaluated_at": "2026-03-14T07:33:52.414380+00:00",
+  "completion_score": 100.0,
+  "deliverable_presence_score": 1.0,
+  "criteria_compliance_score": 1.0,
+  "status": "completed",
+  "domain_reports": [
+    {
+      "domain": "code",
+      "tool_results": {
+        "structure": {
+          "has_package_json": true,
+          "has_src_folder": true,
+          "file_count": 13,
+          "detected_framework": "react"
+        },
+        "audit": "{\n  \"auditReportVersion\": 2,\n  \"vulnerabilities\": {\n    \"@vitest/coverage-v8\": {\n      \"name\": \"@vitest/coverage-v8\",\n      \"severity\": \"moderate\",\n      \"isDirect\": true,\n      \"via\": [\n        \"vitest\"\n      ],\n      \"effects\": [],\n      \"range\": \"<=2.2.0-beta.2\",\n      \"nodes\": [\n        \"node_modules/@vitest/coverage-v8\"\n      ],\n      \"fixAvailable\": {\n        \"name\": \"@vitest/coverage-v8\",\n        \"version\": \"4.1.0\",\n        \"isSemVerMajor\": true\n      }\n    },\n    \"esbuild\": {\n      \"name\": \"esbuild\",\n      \"severity\": \"moderate\",\n      \"isDirect\": false,\n      \"via\": [\n        {\n          \"source\": 1102341,\n          \"name\": \"esbuild\",\n          \"dependency\": \"esbuild\",\n          \"title\": \"esbuild enables any website to send any requests to the development server and read the response\",\n          \"url\": \"https://github.com/advisories/GHSA-67mh-4wv8-2f99\",\n          \"severity\": \"moderate\",\n          \"cwe\": [\n            \"CWE-346\"\n          ],\n          \"cvss\": {\n            \"score\": 5.3,\n            \"vectorString\": \"CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N\"\n          },\n          \"range\": \"<=0.24.2\"\n        }\n      ],\n      \"effects\": [\n        \"vite\"\n      ],\n      \"range\": \"<=0.24.2\",\n      \"nodes\": [\n        \"node_modules/esbuild\"\n      ],\n      \"fixAvailable\": {\n        \"name\": \"vite\",\n        \"version\": \"8.0.0\",\n        \"isSemVerMajor\": true\n      }\n    },\n    \"vite\": {\n      \"name\": \"vite\",\n      \"severity\": \"moderate\",\n      \"isDirect\": true,\n      \"via\": [\n        \"esbuild\"\n      ],\n      \"effects\": [\n        \"vite-node\",\n        \"vitest\"\n      ],\n      \"range\": \"0.11.0 - 6.1.6\",\n      \"nodes\": [\n        \"node_modules/vite\"\n      ],\n      \"fixAvailable\": {\n        \"name\": \"vite\",\n        \"version\": \"8.0.0\",\n        \"isSemVerMajor\": true\n      }\n    },\n    \"vite-node\": {\n      \"name\": \"vite-node\",\n      \"severity\": \"moderate\",\n      \"isDirect\": false,\n      \"via\": [\n        \"vite\"\n      ],\n      \"effects\": [\n        \"vitest\"\n      ],\n      \"range\": \"<=2.2.0-beta.2\",\n      \"nodes\": [\n        \"node_modules/vite-node\"\n      ],\n      \"fixAvailable\": {\n        \"name\": \"vitest\",\n        \"version\": \"4.1.0\",\n        \"isSemVerMajor\": true\n      }\n    },\n    \"vitest\": {\n      \"name\": \"vitest\",\n      \"severity\": \"moderate\",\n      \"isDirect\": true,\n      \"via\": [\n        \"vite\",\n        \"vite-node\"\n      ],\n      \"effects\": [\n        \"@vitest/coverage-v8\"\n      ],\n      \"range\": \"0.0.1 - 0.0.12 || 0.0.29 - 0.0.122 || 0.3.3 - 2.2.0-beta.2\",\n      \"nodes\": [\n        \"node_modules/vitest\"\n      ],\n      \"fixAvailable\": {\n        \"name\": \"vitest\",\n        \"version\": \"4.1.0\",\n        \"isSemVerMajor\": true\n      }\n    }\n  },\n  \"metadata\": {\n    \"vulnerabilities\": {\n      \"info\": 0,\n      \"low\": 0,\n      \"moderate\": 5,\n      \"high\": 0,\n      \"critical\": 0,\n      \"total\": 5\n    },\n    \"dependencies\": {\n      \"prod\": 4,\n      \"dev\": 465,\n      \"optional\": 49,\n      \"peer\": 13,\n      \"peerOptional\": 0,\n      \"total\": 470\n    }\n  }\n}\n",
+        "eslint": "[{\"filePath\":\"/Users/shauryadogra/Developer/coding/python/langGraph/trustvault_agents/qa_agent/sample_data/submissions/code/checkout-react-vite/src/setupTests.js\",\"messages\":[],\"suppressedMessages\":[],\"errorCount\":0,\"fatalErrorCount\":0,\"warningCount\":0,\"fixableErrorCount\":0,\"fixableWarningCount\":0,\"usedDeprecatedRules\":[{\"ruleId\":\"no-extra-semi\",\"replacedBy\":[]},{\"ruleId\":\"no-mixed-spaces-and-tabs\",\"replacedBy\":[]}]}]\n",
+        "tests": "\n\u001b[7m\u001b[1m\u001b[36m RUN \u001b[39m\u001b[22m\u001b[27m \u001b[36mv1.6.1\u001b[39m \u001b[90m/Users/shauryadogra/Developer/coding/python/langGraph/trustvault_agents/qa_agent/sample_data/submissions/code/checkout-react-vite\u001b[39m\n\u001b[2m      Coverage enabled with \u001b[22m\u001b[33mv8\u001b[39m\n\n \u001b[32m\u2713\u001b[39m src/App.test.jsx \u001b[2m (\u001b[22m\u001b[2m8 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[90m 60\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m8 passed\u001b[39m\u001b[22m\u001b[90m (8)\u001b[39m\n\u001b[2m   Start at \u001b[22m 13:02:53\n\u001b[2m   Duration \u001b[22m 1.86s\u001b[2m (transform 48ms, setup 139ms, collect 262ms, tests 60ms, environment 998ms, prepare 130ms)\u001b[22m\n\n\u001b[34m % \u001b[39m\u001b[2mCoverage report from \u001b[22m\u001b[33mv8\u001b[39m\n----------|---------|----------|---------|---------|-------------------\nFile      | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s \n----------|---------|----------|---------|---------|-------------------\nAll files |     100 |      100 |     100 |     100 |                   \n App.jsx  |     100 |      100 |     100 |     100 |                   \n----------|---------|----------|---------|---------|-------------------\n",
+        "semgrep": "{\"version\":\"1.155.0\",\"results\":[],\"errors\":[],\"paths\":{\"scanned\":[\"src/App.jsx\",\"src/App.test.jsx\",\"src/main.jsx\",\"src/setupTests.js\"]},\"time\":{\"rules\":[],\"rules_parse_time\":1.2599198818206787,\"profiling_times\":{\"config_time\":4.269150018692017,\"core_time\":1.8128929138183594,\"ignores_time\":0.0009992122650146484,\"total_time\":6.094297885894775},\"parsing_time\":{\"total_time\":0.0,\"per_file_time\":{\"mean\":0.0,\"std_dev\":0.0},\"very_slow_stats\":{\"time_ratio\":0.0,\"count_ratio\":0.0},\"very_slow_files\":[]},\"scanning_time\":{\"total_time\":0.1025233268737793,\"per_file_time\":{\"mean\":0.00854361057281494,\"std_dev\":0.00010486395918007928},\"very_slow_stats\":{\"time_ratio\":0.0,\"count_ratio\":0.0},\"very_slow_files\":[]},\"matching_time\":{\"total_time\":0.0,\"per_file_and_rule_time\":{\"mean\":0.0,\"std_dev\":0.0},\"very_slow_stats\":{\"time_ratio\":0.0,\"count_ratio\":0.0},\"very_slow_rules_on_files\":[]},\"tainting_time\":{\"total_time\":0.0,\"per_def_and_rule_time\":{\"mean\":0.0,\"std_dev\":0.0},\"very_slow_stats\":{\"time_ratio\":0.0,\"count_ratio\":0.0},\"very_slow_rules_on_defs\":[]},\"fixpoint_timeouts\":[],\"prefiltering\":{\"project_level_time\":0.0,\"file_level_time\":0.0,\"rules_with_project_prefilters_ratio\":0.0,\"rules_with_file_prefilters_ratio\":0.9901477832512315,\"rules_selected_ratio\":0.01847290640394089,\"rules_matched_ratio\":0.01847290640394089},\"targets\":[],\"total_bytes\":0,\"max_memory_bytes\":1184578048},\"engine_requested\":\"OSS\",\"skipped_rules\":[],\"profiling_results\":[]}\n",
+        "madge_circular": "[]\n",
+        "complexity": ""
+      },
+      "criteria_results": [],
+      "agent_confidence": 0.5,
+      "warnings": [],
+      "reasoning_trace": ""
+    },
+    {
+      "domain": "image",
+      "tool_results": {
+        "primary_image": "design_v1.png",
+        "all_images": [
+          "design_v1.png",
+          "design_mobile.png"
+        ],
+        "all_image_metadata": {
+          "design_v1.png": {
+            "filename": "design_v1.png",
+            "width_px": 1440,
+            "height_px": 900,
+            "dpi": [
+              72,
+              72
+            ],
+            "color_mode": "RGB",
+            "format": "PNG",
+            "file_size_kb": 21.53,
+            "has_alpha": false,
+            "tool_status": "ok"
+          },
+          "design_mobile.png": {
+            "filename": "design_mobile.png",
+            "width_px": 375,
+            "height_px": 812,
+            "dpi": [
+              72,
+              72
+            ],
+            "color_mode": "RGB",
+            "format": "PNG",
+            "file_size_kb": 8.7,
+            "has_alpha": false,
+            "tool_status": "ok"
+          }
+        },
+        "color_analysis": {
+          "dominant_color_hex": "#191e31",
+          "palette": [
+            "#191e31",
+            "#ea4a69",
+            "#83879f",
+            "#6a718a",
+            "#8c94a8",
+            "#4e5f7e"
+          ],
+          "palette_size": 6,
+          "tool_status": "ok"
+        },
+        "structural_analysis": {
+          "edge_density": 0.0046,
+          "brightness_mean": 32.33,
+          "contrast_std": 16.58,
+          "text_regions_count": 0,
+          "whitespace_ratio": 0.0004,
+          "tool_status": "ok"
+        }
+      },
+      "criteria_results": [
+        {
+          "criterion": "Desktop mockup must be at least 1440x900px",
+          "met": true,
+          "confidence": 1.0,
+          "evidence": "Metadata for design_v1.png confirms width_px=1440 and height_px=900, meeting the minimum requirement.",
+          "source": "qwen3-vl/vision-judge",
+          "recommended_fix": null
+        },
+        {
+          "criterion": "Mobile mockup must be exactly 375px wide",
+          "met": true,
+          "confidence": 1.0,
+          "evidence": "Metadata for design_mobile.png confirms width_px=375, matching the exact requirement.",
+          "source": "qwen3-vl/vision-judge",
+          "recommended_fix": null
+        }
+      ],
+      "agent_confidence": 1.0,
+      "warnings": [],
+      "reasoning_trace": null
+    },
+    {
+      "domain": "audio",
+      "tool_results": {
+        "metadata": {
+          "filename": "walkthrough.wav",
+          "format": "WAVE",
+          "duration_sec": 35.0,
+          "bitrate_kbps": 1411.2,
+          "channels": 2,
+          "sample_rate_hz": 44100,
+          "file_size_kb": 6029.34,
+          "tool_status": "ok"
+        },
+        "quality": {
+          "loudness_dbfs": -17.01,
+          "zero_crossing_rate": 0.1254,
+          "spectral_bandwidth_hz": 6112.19,
+          "tool_status": "ok"
+        },
+        "classification": {
+          "tool_status": "tool_unavailable: speechbrain not installed"
+        },
+        "prosody": {
+          "tool_status": "tool_unavailable: praat-parselmouth not installed"
+        },
+        "diarization": {
+          "tool_status": "tool_unavailable: pyannote.audio not installed"
+        },
+        "transcription": {
+          "language": "en",
+          "language_probability": 0.3239,
+          "transcript_snippet": "",
+          "topics": [],
+          "tool_status": "ok"
+        }
+      },
+      "criteria_results": [
+        {
+          "criterion": "Audio walkthrough must be at least 20 seconds long",
+          "met": true,
+          "confidence": 1.0,
+          "evidence": "metadata.duration_sec is 35.0",
+          "source": "metadata",
+          "recommended_fix": null
+        },
+        {
+          "criterion": "Audio must be stereo with minimum 44100Hz sample rate",
+          "met": true,
+          "confidence": 1.0,
+          "evidence": "metadata.channels is 2 and metadata.sample_rate_hz is 44100",
+          "source": "metadata",
+          "recommended_fix": null
+        }
+      ],
+      "agent_confidence": 0.7,
+      "warnings": [
+        "Tool classification unavailable: tool_unavailable: speechbrain not installed",
+        "Tool prosody unavailable: tool_unavailable: praat-parselmouth not installed",
+        "Tool diarization unavailable: tool_unavailable: pyannote.audio not installed"
+      ],
+      "reasoning_trace": null
+    }
+  ],
+  "missing_deliverables": [],
+  "issues": [],
+  "requires_human_review": false,
+  "confidence": 1.0,
+  "tier": "2",
+  "submission_hash": "17f03ed8e992761bbf44b97fe2d89f2d2926c2134a672598727968d66b7ff27f"
+}

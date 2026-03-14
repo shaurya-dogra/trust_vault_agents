@@ -28,3 +28,4 @@ speechbrain>=1.0.0
 keybert>=0.8.0
 spacy>=3.7.0
 praat-parselmouth>=0.4.3
+reportlab>=4.0.0
